@@ -145,9 +145,11 @@ def estimate_creation_date(telegram_id):
 # مهمة تحديث الوقت بالاسم الأخير كل دقيقة
 # =====================================================================
 async def update_name_with_time(client):
+    from datetime import timezone, timedelta
+    iraq_tz = timezone(timedelta(hours=3))
     while True:
         try:
-            now = datetime.now()
+            now = datetime.now(iraq_tz)
             time_str = f"{now.hour}.{now.minute:02d}"
             await client(UpdateProfileRequest(last_name=time_str))
         except FloodWaitError as e:
@@ -424,36 +426,7 @@ async def register_features(client):
                     await asyncio.sleep(0.5)
                     return await event.reply(smart[0])
 
-            # تحقق من الرد التلقائي العام
-            row = conn.execute('SELECT enabled, message FROM auto_reply WHERE id = 1').fetchone()
-            if not row or row['enabled'] != 1:
-                return
-
-            # تحقق من التكرار (منع إرسال الرد لنفس الشخص أكثر من مرة)
-            already_replied = conn.execute(
-                'SELECT user_id FROM replied_users WHERE user_id = ?', (event.sender_id,)
-            ).fetchone()
-            if already_replied:
-                return
-
-            # إرسال الرد وتسجيل الشخص
-            await asyncio.sleep(0.8)
-            media_file = get_reply_media()
-            try:
-                if media_file:
-                    await client.send_file(event.chat_id, media_file, caption=row['message'], reply_to=event.id)
-                else:
-                    await event.reply(row['message'])
-                # تسجيل أن هذا الشخص وصله الرد
-                conn.execute(
-                    'INSERT OR REPLACE INTO replied_users (user_id, last_reply) VALUES (?, ?)',
-                    (event.sender_id, datetime.now().timestamp())
-                )
-                conn.commit()
-            except Exception:
-                pass
-
-            # الرد بالذكاء الاصطناعي (OpenRouter مجاني)
+            # الذكاء الاصطناعي يرد على كل رسالة (بدون قيد التكرار)
             if get_setting('ai_reply') == '1' and msg_text:
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -474,10 +447,39 @@ async def register_features(client):
                         ) as resp:
                             data = await resp.json()
                             ai_text = data['choices'][0]['message']['content']
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.8)
                             await event.reply(ai_text)
+                            return
                 except Exception:
                     pass
+
+            # تحقق من الرد التلقائي العام
+            row = conn.execute('SELECT enabled, message FROM auto_reply WHERE id = 1').fetchone()
+            if not row or row['enabled'] != 1:
+                return
+
+            # تحقق من التكرار (منع إرسال الرد لنفس الشخص أكثر من مرة)
+            already_replied = conn.execute(
+                'SELECT user_id FROM replied_users WHERE user_id = ?', (event.sender_id,)
+            ).fetchone()
+            if already_replied:
+                return
+
+            # إرسال الرد التلقائي وتسجيل الشخص
+            await asyncio.sleep(0.8)
+            media_file = get_reply_media()
+            try:
+                if media_file:
+                    await client.send_file(event.chat_id, media_file, caption=row['message'], reply_to=event.id)
+                else:
+                    await event.reply(row['message'])
+                conn.execute(
+                    'INSERT OR REPLACE INTO replied_users (user_id, last_reply) VALUES (?, ?)',
+                    (event.sender_id, datetime.now().timestamp())
+                )
+                conn.commit()
+            except Exception:
+                pass
 
     # =========================================================
     # 10. تفعيل/تعطيل الذكاء الاصطناعي
