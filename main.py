@@ -1013,19 +1013,30 @@ async def register_features(client):
             import yt_dlp as ytdlp
             me = await get_me_cached(client)
             ydl_opts = {
-                'format': 'bestaudio/best',
+                'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
                 'outtmpl': f"audio_{me.id}.%(ext)s",
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
                 'quiet': True,
+                'no_warnings': True,
             }
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: ytdlp.YoutubeDL(ydl_opts).download([item['url']]))
+            def do_download():
+                with ytdlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(item['url'], download=True)
+                    return ydl.prepare_filename(info)
+            downloaded_file = await loop.run_in_executor(None, do_download)
 
-            audio_file = f"audio_{me.id}.mp3"
+            if os.path.exists(downloaded_file):
+                from telethon.tl.types import DocumentAttributeAudio
+                await client.send_file(
+                    event.chat_id,
+                    downloaded_file,
+                    caption=f"🎵 {item['title']}",
+                    attributes=[DocumentAttributeAudio(duration=0, title=item['title'], performer="YouTube")]
+                )
+                os.remove(downloaded_file)
+                await event.delete()
+            else:
+                await event.edit("❌ فشل تحميل الصوت.")
             if os.path.exists(audio_file):
                 await client.send_file(
                     event.chat_id,
