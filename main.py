@@ -962,23 +962,18 @@ async def register_features(client):
         query = event.pattern_match.group(1).strip()
         await event.edit(f"🔍 `جاري البحث عن: {query}...`")
         try:
-            import yt_dlp
-            ydl_opts = {
-                'quiet': True,
-                'extract_flat': True,
-                'default_search': f'ytsearch5:{query}',
-            }
+            import yt_dlp as ytdlp
+            ydl_opts = {'quiet': True, 'extract_flat': True}
             loop = asyncio.get_event_loop()
             def do_search():
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with ytdlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(f"ytsearch5:{query}", download=False)
             info = await loop.run_in_executor(None, do_search)
 
             if not info or 'entries' not in info or not info['entries']:
                 return await event.edit("❌ ما لقيت نتائج!")
 
-            me = await get_me_cached(client)
-            youtube_results[me.id] = []
+            youtube_results[event.chat_id] = []
             text = f"🔍 **نتائج البحث عن:** {query}\n\n"
 
             for i, entry in enumerate(info['entries'][:5], 1):
@@ -988,14 +983,10 @@ async def register_features(client):
                 duration = entry.get('duration', 0)
                 mins = int(duration) // 60 if duration else 0
                 secs = int(duration) % 60 if duration else 0
-                youtube_results[me.id].append({'title': title, 'url': url})
+                youtube_results[event.chat_id].append({'title': title, 'url': url})
                 text += f"**{i}.** {title}\n📺 {channel} | ⏱ {mins}:{secs:02d}\n\n"
 
-            text += (
-                "━━━━━━━━━━━━━━━\n"
-                "🎵 تحميل صوت: `.صوت [رقم]`\n"
-                "🎬 رابط فيديو: `.فيديو [رقم]`"
-            )
+            text += "━━━━━━━━━━━━━━━\n🎵 تحميل صوت: `.صوت [رقم]`\n🎬 رابط فيديو: `.فيديو [رقم]`"
             await event.edit(text)
 
         except Exception as e:
@@ -1004,27 +995,23 @@ async def register_features(client):
     @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.فيديو\s+(\d+)'))
     async def youtube_video(event):
         num = int(event.pattern_match.group(1)) - 1
-        me = await get_me_cached(client)
-        results = youtube_results.get(me.id, [])
+        results = youtube_results.get(event.chat_id, [])
         if not results or num < 0 or num >= len(results):
-            return await event.edit("⚠️ اختر رقم صحيح من نتائج البحث.")
+            return await event.edit("⚠️ ابحث أول بـ `.يوتيوب [اسم]` ثم اختر رقم.")
         item = results[num]
-        await event.edit(
-            f"🎬 **{item['title']}**\n\n"
-            f"🔗 {item['url']}"
-        )
+        await event.edit(f"🎬 **{item['title']}**\n\n🔗 {item['url']}")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.صوت\s+(\d+)'))
     async def youtube_audio(event):
         num = int(event.pattern_match.group(1)) - 1
-        me = await get_me_cached(client)
-        results = youtube_results.get(me.id, [])
+        results = youtube_results.get(event.chat_id, [])
         if not results or num < 0 or num >= len(results):
-            return await event.edit("⚠️ اختر رقم صحيح من نتائج البحث.")
+            return await event.edit("⚠️ ابحث أول بـ `.يوتيوب [اسم]` ثم اختر رقم.")
         item = results[num]
         await event.edit(f"⏳ `جاري تحميل الصوت...`\n🎵 {item['title']}")
         try:
-            import yt_dlp
+            import yt_dlp as ytdlp
+            me = await get_me_cached(client)
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': f"audio_{me.id}.%(ext)s",
@@ -1036,7 +1023,7 @@ async def register_features(client):
                 'quiet': True,
             }
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: __import__('yt_dlp').YoutubeDL(ydl_opts).download([item['url']]))
+            await loop.run_in_executor(None, lambda: ytdlp.YoutubeDL(ydl_opts).download([item['url']]))
 
             audio_file = f"audio_{me.id}.mp3"
             if os.path.exists(audio_file):
