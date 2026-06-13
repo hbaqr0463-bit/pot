@@ -12,7 +12,7 @@ from telethon.tl.functions.contacts import BlockRequest, UnblockRequest
 from telethon.tl.functions.channels import LeaveChannelRequest
 from telethon.tl.types import InputPhoto
 from telethon.errors import FloodWaitError
-import requests
+import aiohttp
 
 # =====================================================================
 # ⚙️ قسم الإعدادات (تُقرأ من متغيرات البيئة لأمان أكثر)
@@ -456,7 +456,200 @@ async def register_features(client):
             # الرد بالذكاء الاصطناعي (OpenRouter مجاني)
             if get_setting('ai_reply') == '1' and msg_text:
                 try:
-                    response = requests.p      try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            url="https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                                "Content-Type": "application/json"
+                            },
+                            json={
+                                "model": "meta-llama/llama-3-8b-instruct:free",
+                                "messages": [
+                                    {"role": "system", "content": "أنت مساعد شخصي. رد بشكل طبيعي وقصير باللغة العربية. لا تذكر أنك ذكاء اصطناعي."},
+                                    {"role": "user", "content": msg_text}
+                                ]
+                            },
+                            timeout=aiohttp.ClientTimeout(total=15)
+                        ) as resp:
+                            data = await resp.json()
+                            ai_text = data['choices'][0]['message']['content']
+                            await asyncio.sleep(1)
+                            await event.reply(ai_text)
+                except Exception:
+                    pass
+
+    # =========================================================
+    # 10. تفعيل/تعطيل الذكاء الاصطناعي
+    # =========================================================
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ذكاء\s+(تفعيل|تعطيل)'))
+    async def toggle_ai(event):
+        cmd = event.pattern_match.group(1)
+        if cmd == 'تفعيل':
+            set_setting('ai_reply', '1')
+            await event.edit("🤖 **تم تفعيل الرد بالذكاء الاصطناعي.**")
+        else:
+            set_setting('ai_reply', '0')
+            await event.edit("🤖 **تم تعطيل الرد بالذكاء الاصطناعي.**")
+
+    # =========================================================
+    # 11. ضبط وحذف صورة الرد
+    # =========================================================
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ضبط_صورة'))
+    async def set_reply_image(event):
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على الصورة.")
+        reply_msg = await event.get_reply_message()
+        if not reply_msg.media:
+            return await event.edit("⚠️ الرسالة لا تحتوي على ميديا.")
+        await event.edit("🔄 `جاري الحفظ...`")
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.mp4', '*.gif']:
+            for f in glob.glob(f'reply_media{ext}'):
+                os.remove(f)
+        try:
+            if await reply_msg.download_media(file='reply_media'):
+                await event.edit("✅ تم الحفظ بنجاح!")
+            else:
+                await event.edit("❌ فشل التحميل.")
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.حذف_صورة'))
+    async def delete_reply_image(event):
+        deleted = False
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.mp4', '*.gif']:
+            for f in glob.glob(f'reply_media{ext}'):
+                os.remove(f)
+                deleted = True
+        await event.edit("🗑️ تم الحذف." if deleted else "⚠️ لا توجد ميديا مخصصة.")
+
+    # =========================================================
+    # 12. انتحال الهوية (محسّن)
+    # =========================================================
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.انتحال(?:\s+@?([\w_]+))?'))
+    async def clone_profile(event):
+        target = None
+        if event.is_reply:
+            target = await client.get_entity((await event.get_reply_message()).sender_id)
+        elif event.pattern_match.group(1):
+            target = await client.get_entity(event.pattern_match.group(1))
+        else:
+            return await event.edit("⚠️ حدد الشخص بالرد أو اليوزر.")
+
+        await event.edit("🚀 `جاري سحب الهوية والميديا...`")
+        try:
+            full_target = await client(GetFullUserRequest(target))
+            my_user_obj = await get_me_cached(client)
+            full_me = await client(GetFullUserRequest('me'))
+
+            # حفظ البيانات الأصلية
+            with get_db() as conn:
+                conn.execute(
+                    'INSERT OR REPLACE INTO profile_backup (id, first_name, last_name, bio) VALUES (?, ?, ?, ?)',
+                    (db_id, my_user_obj.first_name, my_user_obj.last_name or "", full_me.full_user.about or "")
+                )
+                conn.commit()
+
+            # حذف باك أب قديم
+            for f in glob.glob(f'{BACKUP_FOLDER}/*'):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+            # حفظ الصور الأصلية
+            my_photos = await client.get_profile_photos('me')
+            for i, photo in enumerate(my_photos):
+                await client.download_media(photo, f'{BACKUP_FOLDER}/orig_{i}.jpg')
+
+            # تحديث الاسم والبايو
+            await client(UpdateProfileRequest(
+                first_name=target.first_name,
+                last_name=target.last_name or "",
+                about=full_target.full_user.about or ""
+            ))
+
+            # تحميل صورة الهدف
+            downloaded_profile_media = await client.download_profile_photo(target, file="target_current_avatar")
+
+            # حذف الصور الحالية
+            if my_photos:
+                try:
+                    await client(DeletePhotosRequest(id=[
+                        InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)
+                        for p in my_photos
+                    ]))
+                    await asyncio.sleep(2)  # انتظار تأكيد الحذف
+                except Exception:
+                    pass
+
+            # رفع صورة الهدف
+            if downloaded_profile_media:
+                try:
+                    uploaded_file = await client.upload_file(downloaded_profile_media)
+                    if downloaded_profile_media.lower().endswith(('.mp4', '.gif', '.mov')):
+                        await client(UploadProfilePhotoRequest(video=uploaded_file, video_start_ts=0.0))
+                    else:
+                        await client(UploadProfilePhotoRequest(file=uploaded_file))
+                    await event.edit(f"✅ تم انتحال **{target.first_name}** بنجاح.")
+                except FloodWaitError as e:
+                    await event.edit(f"⚠️ تم نسخ الاسم والبايو، تعديل الصور معلق: انتظر {e.seconds} ثانية.")
+                finally:
+                    if os.path.exists(downloaded_profile_media):
+                        os.remove(downloaded_profile_media)
+            else:
+                await event.edit(f"✅ تم انتحال البيانات (الهدف لا يملك صورة).")
+
+        except Exception as e:
+            await event.edit(f"❌ خطأ أثناء الانتحال: {e}")
+
+    # =========================================================
+    # 13. استعادة الهوية الأصلية (محسّنة بشكل كامل)
+    # =========================================================
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.رجوع'))
+    async def restore_profile(event):
+        await event.edit("♻️ `جاري استعادة الهوية الأصلية...`")
+        with get_db() as conn:
+            row = conn.execute('SELECT first_name, last_name, bio FROM profile_backup WHERE id = ?', (db_id,)).fetchone()
+        if not row:
+            return await event.edit("⚠️ لا توجد بيانات أصلية محفوظة.")
+        try:
+            # 1. استعادة الاسم والبايو
+            await client(UpdateProfileRequest(
+                first_name=row['first_name'],
+                last_name=row['last_name'],
+                about=row['bio']
+            ))
+            await event.edit("♻️ `تم استعادة الاسم... جاري معالجة الصور...`")
+
+            # 2. حذف الصور الحالية مع انتظار تأكيد
+            for attempt in range(3):
+                try:
+                    photos = await client.get_profile_photos('me')
+                    if not photos:
+                        break
+                    await client(DeletePhotosRequest(id=[
+                        InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)
+                        for p in photos
+                    ]))
+                    await asyncio.sleep(3)  # انتظار تأكيد الحذف من السيرفر
+                    # تحقق أن الصور اتحذفت فعلاً
+                    remaining = await client.get_profile_photos('me')
+                    if not remaining:
+                        break
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds)
+                except Exception:
+                    break
+
+            # 3. رفع الصور الأصلية بالترتيب مع انتظار بين كل صورة
+            backup_files = sorted(glob.glob(f'{BACKUP_FOLDER}/orig_*.jpg'))
+            if backup_files:
+                uploaded_count = 0
+                for f in backup_files:
+                    if os.path.exists(f):
+                        for attempt in range(3):  # إعادة المحاولة 3 مرات
+                            try:
                                 uploaded = await client.upload_file(f)
                                 await client(UploadProfilePhotoRequest(file=uploaded))
                                 uploaded_count += 1
