@@ -962,29 +962,44 @@ async def register_features(client):
         query = event.pattern_match.group(1).strip()
         await event.edit(f"🔍 `جاري البحث عن: {query}...`")
         try:
-            import yt_dlp as ytdlp
-            ydl_opts = {'quiet': True, 'extract_flat': True}
-            loop = asyncio.get_event_loop()
-            def do_search():
-                with ytdlp.YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(f"ytsearch5:{query}", download=False)
-            info = await loop.run_in_executor(None, do_search)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://www.youtube.com/results",
+                    params={"search_query": query},
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
+                    html = await resp.text()
 
-            if not info or 'entries' not in info or not info['entries']:
-                return await event.edit("❌ ما لقيت نتائج!")
+            import re
+            pattern = r'"videoId":"([^"]+)".*?"title":\{"runs":\[\{"text":"([^"]+)".*?"longBylineText":\{"runs":\[\{"text":"([^"]+)".*?"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"[^"]*"\}\},"simpleText":"([^"]+)"'
+            results_raw = re.findall(r'"videoId":"([^"]{11})"', html)
+            titles_raw = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"', html)
+            channels_raw = re.findall(r'"ownerText":\{"runs":\[\{"text":"([^"]+)"', html)
+            durations_raw = re.findall(r'"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"[^"]*"\}\},"simpleText":"([^"]+)"', html)
+
+            if not results_raw or not titles_raw:
+                return await event.edit("❌ ما لقيت نتائج! جرب بحث ثاني.")
 
             youtube_results[event.chat_id] = []
             text = f"🔍 **نتائج البحث عن:** {query}\n\n"
 
-            for i, entry in enumerate(info['entries'][:5], 1):
-                title = entry.get('title', 'بدون عنوان')
-                url = f"https://youtu.be/{entry.get('id', '')}"
-                channel = entry.get('channel', entry.get('uploader', ''))
-                duration = entry.get('duration', 0)
-                mins = int(duration) // 60 if duration else 0
-                secs = int(duration) % 60 if duration else 0
+            count = 0
+            seen = set()
+            for i, vid_id in enumerate(results_raw):
+                if vid_id in seen or count >= 5:
+                    break
+                seen.add(vid_id)
+                title = titles_raw[count] if count < len(titles_raw) else "بدون عنوان"
+                channel = channels_raw[count] if count < len(channels_raw) else ""
+                duration = durations_raw[count] if count < len(durations_raw) else ""
+                url = f"https://youtu.be/{vid_id}"
                 youtube_results[event.chat_id].append({'title': title, 'url': url})
-                text += f"**{i}.** {title}\n📺 {channel} | ⏱ {mins}:{secs:02d}\n\n"
+                text += f"**{count+1}.** {title}\n📺 {channel} | ⏱ {duration}\n\n"
+                count += 1
+
+            if not youtube_results[event.chat_id]:
+                return await event.edit("❌ ما لقيت نتائج!")
 
             text += "━━━━━━━━━━━━━━━\n🎵 تحميل صوت: `.صوت [رقم]`\n🎬 رابط فيديو: `.فيديو [رقم]`"
             await event.edit(text)
