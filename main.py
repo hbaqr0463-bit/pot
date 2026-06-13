@@ -638,11 +638,11 @@ async def register_features(client):
                     else:
                         await client(UploadProfilePhotoRequest(file=uploaded_file))
                     await event.edit(f"✅ تم انتحال **{target.first_name}** بنجاح.")
-                # حفظ تاريخ الانتحال
-                with get_db() as conn:
-                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned', ?)", (target.first_name,))
-                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned_at', ?)", (datetime.now().strftime('%Y-%m-%d %H:%M'),))
-                    conn.commit()
+                    # حفظ تاريخ الانتحال
+                    with get_db() as conn:
+                        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned', ?)", (target.first_name,))
+                        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned_at', ?)", (datetime.now().strftime('%Y-%m-%d %H:%M'),))
+                        conn.commit()
                 except FloodWaitError as e:
                     await event.edit(f"⚠️ تم نسخ الاسم والبايو، تعديل الصور معلق: انتظر {e.seconds} ثانية.")
                 finally:
