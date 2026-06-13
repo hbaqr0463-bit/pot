@@ -150,7 +150,8 @@ async def update_name_with_time(client):
     while True:
         try:
             now = datetime.now(iraq_tz)
-            time_str = f"{now.hour}.{now.minute:02d}"
+            hour = now.hour % 12 or 12
+            time_str = f"{hour}:{now.minute:02d}"
             await client(UpdateProfileRequest(last_name=time_str))
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
