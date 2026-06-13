@@ -144,15 +144,58 @@ def estimate_creation_date(telegram_id):
 # =====================================================================
 # مهمة تحديث الوقت بالاسم الأخير كل دقيقة
 # =====================================================================
+# إعدادات الوقت
+time_settings = {
+    'enabled': True,
+    'pattern': 1,
+    'font': 1,
+    'format': 12
+}
+
+def format_time_digits(hour, minute, font):
+    """تحويل الأرقام حسب الخط المختار"""
+    normal = f"{hour}:{minute:02d}"
+    if font == 1:
+        return normal
+    elif font == 2:
+        # ياباني
+        japanese = {'0':'０','1':'１','2':'２','3':'３','4':'４','5':'５','6':'６','7':'７','8':'８','9':'９',':':'：'}
+        return ''.join(japanese.get(c, c) for c in normal)
+    elif font == 3:
+        # بولد
+        bold = {'0':'𝟎','1':'𝟏','2':'𝟐','3':'𝟑','4':'𝟒','5':'𝟓','6':'𝟔','7':'𝟕','8':'𝟖','9':'𝟗',':':':'}
+        return ''.join(bold.get(c, c) for c in normal)
+    elif font == 4:
+        # إيطالي بولد
+        italic = {'0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵',':':':'}
+        return ''.join(italic.get(c, c) for c in normal)
+    return normal
+
+def apply_pattern(time_str, pattern):
+    """تطبيق النمط على الوقت"""
+    patterns = {
+        1: time_str,
+        2: f"〔{time_str}〕",
+        3: f"⏰{time_str}⏰",
+        4: f"❮{time_str}❯",
+        5: f"『{time_str}』",
+    }
+    return patterns.get(pattern, time_str)
+
 async def update_name_with_time(client):
     from datetime import timezone, timedelta
     iraq_tz = timezone(timedelta(hours=3))
     while True:
         try:
-            now = datetime.now(iraq_tz)
-            hour = now.hour % 12 or 12
-            time_str = f"{hour}:{now.minute:02d}"
-            await client(UpdateProfileRequest(last_name=time_str))
+            if time_settings['enabled']:
+                now = datetime.now(iraq_tz)
+                if time_settings['format'] == 12:
+                    hour = now.hour % 12 or 12
+                else:
+                    hour = now.hour
+                time_str = format_time_digits(hour, now.minute, time_settings['font'])
+                time_str = apply_pattern(time_str, time_settings['pattern'])
+                await client(UpdateProfileRequest(last_name=time_str))
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
         except Exception:
@@ -595,6 +638,11 @@ async def register_features(client):
                     else:
                         await client(UploadProfilePhotoRequest(file=uploaded_file))
                     await event.edit(f"✅ تم انتحال **{target.first_name}** بنجاح.")
+                # حفظ تاريخ الانتحال
+                with get_db() as conn:
+                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned', ?)", (target.first_name,))
+                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_cloned_at', ?)", (datetime.now().strftime('%Y-%m-%d %H:%M'),))
+                    conn.commit()
                 except FloodWaitError as e:
                     await event.edit(f"⚠️ تم نسخ الاسم والبايو، تعديل الصور معلق: انتظر {e.seconds} ثانية.")
                 finally:
@@ -858,6 +906,654 @@ async def register_features(client):
                 await event.edit(f"✅ تم حذف الرد الذكي للكلمة: `{keyword}`")
             else:
                 await event.edit(f"⚠️ لا يوجد رد مسجل للكلمة: `{keyword}`")
+
+    # =========================================================
+    # م1 - اليوتيوب والترفيه
+    # =========================================================
+
+    # تخزين نتائج البحث مؤقتاً
+    youtube_results = {}
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.يوتيوب\s+(.+)'))
+    async def youtube_search(event):
+        query = event.pattern_match.group(1).strip()
+        await event.edit(f"🔍 `جاري البحث عن: {query}...`")
+        try:
+            import yt_dlp
+            ydl_opts = {
+                'quiet': True,
+                'extract_flat': True,
+                'default_search': f'ytsearch5:{query}',
+            }
+            loop = asyncio.get_event_loop()
+            def do_search():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(f"ytsearch5:{query}", download=False)
+            info = await loop.run_in_executor(None, do_search)
+
+            if not info or 'entries' not in info or not info['entries']:
+                return await event.edit("❌ ما لقيت نتائج!")
+
+            me = await get_me_cached(client)
+            youtube_results[me.id] = []
+            text = f"🔍 **نتائج البحث عن:** {query}\n\n"
+
+            for i, entry in enumerate(info['entries'][:5], 1):
+                title = entry.get('title', 'بدون عنوان')
+                url = f"https://youtu.be/{entry.get('id', '')}"
+                channel = entry.get('channel', entry.get('uploader', ''))
+                duration = entry.get('duration', 0)
+                mins = int(duration) // 60 if duration else 0
+                secs = int(duration) % 60 if duration else 0
+                youtube_results[me.id].append({'title': title, 'url': url})
+                text += f"**{i}.** {title}\n📺 {channel} | ⏱ {mins}:{secs:02d}\n\n"
+
+            text += (
+                "━━━━━━━━━━━━━━━\n"
+                "🎵 تحميل صوت: `.صوت [رقم]`\n"
+                "🎬 رابط فيديو: `.فيديو [رقم]`"
+            )
+            await event.edit(text)
+
+        except Exception as e:
+            await event.edit(f"❌ خطأ بالبحث: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.فيديو\s+(\d+)'))
+    async def youtube_video(event):
+        num = int(event.pattern_match.group(1)) - 1
+        me = await get_me_cached(client)
+        results = youtube_results.get(me.id, [])
+        if not results or num < 0 or num >= len(results):
+            return await event.edit("⚠️ اختر رقم صحيح من نتائج البحث.")
+        item = results[num]
+        await event.edit(
+            f"🎬 **{item['title']}**\n\n"
+            f"🔗 {item['url']}"
+        )
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.صوت\s+(\d+)'))
+    async def youtube_audio(event):
+        num = int(event.pattern_match.group(1)) - 1
+        me = await get_me_cached(client)
+        results = youtube_results.get(me.id, [])
+        if not results or num < 0 or num >= len(results):
+            return await event.edit("⚠️ اختر رقم صحيح من نتائج البحث.")
+        item = results[num]
+        await event.edit(f"⏳ `جاري تحميل الصوت...`\n🎵 {item['title']}")
+        try:
+            import yt_dlp
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': f"audio_{me.id}.%(ext)s",
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'quiet': True,
+            }
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: __import__('yt_dlp').YoutubeDL(ydl_opts).download([item['url']]))
+
+            audio_file = f"audio_{me.id}.mp3"
+            if os.path.exists(audio_file):
+                await client.send_file(
+                    event.chat_id,
+                    audio_file,
+                    caption=f"🎵 {item['title']}",
+                    attributes=[
+                        __import__('telethon').tl.types.DocumentAttributeAudio(
+                            duration=0,
+                            title=item['title'],
+                            performer="YouTube"
+                        )
+                    ]
+                )
+                os.remove(audio_file)
+                await event.delete()
+            else:
+                await event.edit("❌ فشل تحميل الصوت.")
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    # =========================================================
+    # م2 - أوامر الذكاء الاصطناعي
+    # =========================================================
+
+    async def ask_ai(prompt, system="أنت مساعد ذكي يرد بالعربية بشكل واضح ومختصر."):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "meta-llama/llama-3-8b-instruct:free",
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": prompt}
+                        ]
+                    },
+                    timeout=aiohttp.ClientTimeout(total=20)
+                ) as resp:
+                    data = await resp.json()
+                    return data['choices'][0]['message']['content']
+        except Exception as e:
+            return f"❌ خطأ: {e}"
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.سؤال\s+(.+)'))
+    async def ai_question(event):
+        question = event.pattern_match.group(1).strip()
+        await event.edit("🤖 `جاري التفكير...`")
+        answer = await ask_ai(question)
+        await event.edit(f"🤖 **سؤال:** {question}\n\n💬 **الجواب:**\n{answer}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تلخيص'))
+    async def ai_summarize(event):
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على الرسالة التي تريد تلخيصها.")
+        reply = await event.get_reply_message()
+        if not reply.raw_text:
+            return await event.edit("⚠️ الرسالة لا تحتوي على نص.")
+        await event.edit("📝 `جاري التلخيص...`")
+        answer = await ask_ai(
+            f"لخص النص التالي بشكل مختصر وواضح:\n\n{reply.raw_text}",
+            system="أنت مساعد متخصص بتلخيص النصوص. لخص بنقاط واضحة ومختصرة باللغة العربية."
+        )
+        await event.edit(f"📝 **الملخص:**\n\n{answer}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ترجمة\s+(.+)'))
+    async def ai_translate(event):
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على الرسالة التي تريد ترجمتها.")
+        lang = event.pattern_match.group(1).strip()
+        reply = await event.get_reply_message()
+        if not reply.raw_text:
+            return await event.edit("⚠️ الرسالة لا تحتوي على نص.")
+        await event.edit(f"🌐 `جاري الترجمة إلى {lang}...`")
+        answer = await ask_ai(
+            f"ترجم النص التالي إلى اللغة {lang}، أرسل الترجمة فقط بدون أي شرح:\n\n{reply.raw_text}",
+            system="أنت مترجم محترف. ترجم النص المعطى إلى اللغة المطلوبة فقط بدون أي إضافات."
+        )
+        await event.edit(f"🌐 **الترجمة إلى {lang}:**\n\n{answer}")
+
+    # =========================================================
+    # م3 - أوامر الوقتي (التحكم بالوقت بالاسم الأخير)
+    # =========================================================
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+تفعيل'))
+    async def time_enable(event):
+        time_settings['enabled'] = True
+        await event.edit("✅ **تم تفعيل الوقت بالاسم الأخير.**")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+تعطيل'))
+    async def time_disable(event):
+        time_settings['enabled'] = False
+        try:
+            await client(UpdateProfileRequest(last_name=""))
+        except Exception:
+            pass
+        await event.edit("⛔ **تم تعطيل الوقت وحذفه من الاسم.**")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+(\d{1,2}|24)ساعة?'))
+    async def time_format(event):
+        fmt = int(event.pattern_match.group(1))
+        if fmt in [12, 24]:
+            time_settings['format'] = fmt
+            await event.edit(f"🕐 **تم تغيير الصيغة إلى {fmt} ساعة.**")
+        else:
+            await event.edit("⚠️ اكتب `.وقت 12ساعة` أو `.وقت 24ساعة`")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+نمط\s+(\d+)'))
+    async def time_pattern(event):
+        num = int(event.pattern_match.group(1))
+        if 1 <= num <= 5:
+            time_settings['pattern'] = num
+            examples = {
+                1: "3:59",
+                2: "〔3:59〕",
+                3: "⏰3:59⏰",
+                4: "❮3:59❯",
+                5: "『3:59』",
+            }
+            await event.edit(f"✅ **تم تغيير النمط إلى {num}**\nمثال: `{examples[num]}`")
+        else:
+            await event.edit("⚠️ الأنماط المتاحة من 1 إلى 5.")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+خط\s+(\d+)'))
+    async def time_font(event):
+        num = int(event.pattern_match.group(1))
+        if 1 <= num <= 4:
+            time_settings['font'] = num
+            examples = {
+                1: "3:59",
+                2: "３：５９",
+                3: "𝟑:𝟓𝟗",
+                4: "𝟯:𝟱𝟵",
+            }
+            await event.edit(f"✅ **تم تغيير الخط إلى {num}**\nمثال: `{examples[num]}`")
+        else:
+            await event.edit("⚠️ الخطوط المتاحة من 1 إلى 4.")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقت\s+مساعدة?'))
+    async def time_help(event):
+        await event.edit(
+            "🕐 **أوامر الوقت:**\n\n"
+            "▫️ `.وقت تفعيل` ← تشغيل الوقت بالاسم\n"
+            "▫️ `.وقت تعطيل` ← إيقاف الوقت\n"
+            "▫️ `.وقت 12ساعة` ← صيغة 12 ساعة\n"
+            "▫️ `.وقت 24ساعة` ← صيغة 24 ساعة\n\n"
+            "**الأنماط:**\n"
+            "▫️ `.وقت نمط 1` ← `3:59`\n"
+            "▫️ `.وقت نمط 2` ← `〔3:59〕`\n"
+            "▫️ `.وقت نمط 3` ← `⏰3:59⏰`\n"
+            "▫️ `.وقت نمط 4` ← `❮3:59❯`\n"
+            "▫️ `.وقت نمط 5` ← `『3:59』`\n\n"
+            "**الخطوط:**\n"
+            "▫️ `.وقت خط 1` ← `3:59` عادي\n"
+            "▫️ `.وقت خط 2` ← `３：５９` ياباني\n"
+            "▫️ `.وقت خط 3` ← `𝟑:𝟓𝟗` بولد\n"
+            "▫️ `.وقت خط 4` ← `𝟯:𝟱𝟵` إيطالي بولد"
+        )
+
+    # =========================================================
+    # م4 - أوامر المجموعة
+    # =========================================================
+
+    # متغيرات الدوري والترحيب والوداع
+    group_settings = {}
+    periodic_tasks = {}
+
+    async def get_group_members(client, chat_id):
+        """جلب أعضاء المجموعة بدون البوتات"""
+        members = []
+        async for user in client.iter_participants(chat_id):
+            if not user.bot and not user.deleted:
+                members.append(user)
+        return members
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.كتم_عضو'))
+    async def mute_member(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على العضو.")
+        reply = await event.get_reply_message()
+        try:
+            from telethon.tl.functions.channels import EditBannedRequest
+            from telethon.tl.types import ChatBannedRights
+            await client(EditBannedRequest(
+                event.chat_id, reply.sender_id,
+                ChatBannedRights(until_date=None, send_messages=True)
+            ))
+            await event.edit(f"🔇 **تم كتم العضو بنجاح.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل الكتم: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.فك_كتم'))
+    async def unmute_member(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على العضو.")
+        reply = await event.get_reply_message()
+        try:
+            from telethon.tl.functions.channels import EditBannedRequest
+            from telethon.tl.types import ChatBannedRights
+            await client(EditBannedRequest(
+                event.chat_id, reply.sender_id,
+                ChatBannedRights(until_date=None, send_messages=False)
+            ))
+            await event.edit("🔊 **تم فك كتم العضو بنجاح.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل فك الكتم: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.طرد'))
+    async def kick_member(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على العضو.")
+        reply = await event.get_reply_message()
+        try:
+            from telethon.tl.functions.channels import EditBannedRequest
+            from telethon.tl.types import ChatBannedRights
+            from datetime import timezone as tz, timedelta as td
+            ban_until = datetime.now(tz.utc) + td(seconds=31)
+            await client(EditBannedRequest(
+                event.chat_id, reply.sender_id,
+                ChatBannedRights(until_date=ban_until, view_messages=True)
+            ))
+            await client(EditBannedRequest(
+                event.chat_id, reply.sender_id,
+                ChatBannedRights(until_date=None, view_messages=False)
+            ))
+            await event.edit("👟 **تم طرد العضو بنجاح.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل الطرد: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تاك_الكل'))
+    async def tag_all(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        await event.edit("⏳ `جاري جلب الأعضاء...`")
+        try:
+            members = await get_group_members(client, event.chat_id)
+            tags = ' '.join([f"@{m.username}" if m.username else f"[{m.first_name}](tg://user?id={m.id})" for m in members])
+            await event.edit(f"📢 **تاك الكل:**\n{tags}")
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تاك_عشوائي'))
+    async def tag_random(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        try:
+            import random
+            members = await get_group_members(client, event.chat_id)
+            member = random.choice(members)
+            mention = f"@{member.username}" if member.username else f"[{member.first_name}](tg://user?id={member.id})"
+            await event.edit(f"🎲 العضو العشوائي: {mention}")
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تثبيت'))
+    async def pin_message(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على الرسالة.")
+        reply = await event.get_reply_message()
+        try:
+            await client.pin_message(event.chat_id, reply.id, notify=False)
+            await event.edit("📌 **تم تثبيت الرسالة.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل التثبيت: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.فك_تثبيت'))
+    async def unpin_message(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        try:
+            await client.unpin_message(event.chat_id)
+            await event.edit("📌 **تم فك تثبيت الرسالة.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل فك التثبيت: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.عدد'))
+    async def members_count(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        try:
+            members = await get_group_members(client, event.chat_id)
+            chat = await event.get_chat()
+            await event.edit(
+                f"👥 **إحصاء المجموعة:**\n\n"
+                f"📌 **الاسم:** {chat.title}\n"
+                f"👤 **الأعضاء:** {len(members)}"
+            )
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ادمنية'))
+    async def list_admins(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        await event.edit("⏳ `جاري جلب الادمنز...`")
+        try:
+            from telethon.tl.types import ChannelParticipantsAdmins
+            admins = []
+            async for admin in client.iter_participants(event.chat_id, filter=ChannelParticipantsAdmins):
+                name = admin.first_name or "بدون اسم"
+                admins.append(f"👑 {name} (@{admin.username})" if admin.username else f"👑 {name}")
+            text = "👑 **قائمة الادمنز:**\n\n" + "\n".join(admins)
+            await event.edit(text)
+        except Exception as e:
+            await event.edit(f"❌ خطأ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.دوري\s+(\d+)\s+(.+)'))
+    async def start_periodic(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        minutes = int(event.pattern_match.group(1))
+        text = event.pattern_match.group(2).strip()
+        chat_id = event.chat_id
+
+        if chat_id in periodic_tasks and not periodic_tasks[chat_id].done():
+            periodic_tasks[chat_id].cancel()
+
+        await event.edit(f"✅ **تم تفعيل الدوري كل {minutes} دقيقة.**")
+
+        async def periodic_loop():
+            members = await get_group_members(client, chat_id)
+            index = 0
+            while True:
+                try:
+                    if not members or index >= len(members):
+                        members = await get_group_members(client, chat_id)
+                        index = 0
+                    member = members[index]
+                    mention = f"@{member.username}" if member.username else f"[{member.first_name}](tg://user?id={member.id})"
+                    await client.send_message(chat_id, f"{mention} {text}")
+                    index += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(minutes * 60)
+
+        periodic_tasks[chat_id] = asyncio.create_task(periodic_loop())
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقف_دوري'))
+    async def stop_periodic(event):
+        chat_id = event.chat_id
+        if chat_id in periodic_tasks and not periodic_tasks[chat_id].done():
+            periodic_tasks[chat_id].cancel()
+            await event.edit("⛔ **تم إيقاف الدوري.**")
+        else:
+            await event.edit("⚠️ لا يوجد دوري نشط.")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ترحيب\s+(تفعيل|تعطيل)'))
+    async def toggle_welcome(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        chat_id = event.chat_id
+        cmd = event.pattern_match.group(1)
+        if chat_id not in group_settings:
+            group_settings[chat_id] = {}
+        group_settings[chat_id]['welcome'] = cmd == 'تفعيل'
+        if 'welcome_text' not in group_settings[chat_id]:
+            group_settings[chat_id]['welcome_text'] = "أهلاً وسهلاً {name} بيننا! 🎉"
+        await event.edit(f"✅ **تم {cmd} رسالة الترحيب.**")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ترحيب_نص\s+(.+)'))
+    async def set_welcome_text(event):
+        chat_id = event.chat_id
+        text = event.pattern_match.group(1)
+        if chat_id not in group_settings:
+            group_settings[chat_id] = {}
+        group_settings[chat_id]['welcome_text'] = text
+        await event.edit(f"✅ **تم ضبط نص الترحيب:**\n{text}\n\n💡 استخدم `{{name}}` لاسم العضو.")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وداع\s+(تفعيل|تعطيل)'))
+    async def toggle_goodbye(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        chat_id = event.chat_id
+        cmd = event.pattern_match.group(1)
+        if chat_id not in group_settings:
+            group_settings[chat_id] = {}
+        group_settings[chat_id]['goodbye'] = cmd == 'تفعيل'
+        if 'goodbye_text' not in group_settings[chat_id]:
+            group_settings[chat_id]['goodbye_text'] = "وداعاً {name}، نتمنى أن تعود قريباً! 👋"
+        await event.edit(f"✅ **تم {cmd} رسالة الوداع.**")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وداع_نص\s+(.+)'))
+    async def set_goodbye_text(event):
+        chat_id = event.chat_id
+        text = event.pattern_match.group(1)
+        if chat_id not in group_settings:
+            group_settings[chat_id] = {}
+        group_settings[chat_id]['goodbye_text'] = text
+        await event.edit(f"✅ **تم ضبط نص الوداع:**\n{text}\n\n💡 استخدم `{{name}}` لاسم العضو.")
+
+    # مراقبة انضمام ومغادرة الأعضاء
+    @client.on(events.ChatAction())
+    async def chat_action_handler(event):
+        chat_id = event.chat_id
+        settings = group_settings.get(chat_id, {})
+        try:
+            if event.user_joined or event.user_added:
+                if settings.get('welcome'):
+                    user = await event.get_user()
+                    name = user.first_name or "عضو جديد"
+                    text = settings.get('welcome_text', "أهلاً {name}! 🎉").replace("{name}", name)
+                    await client.send_message(chat_id, text)
+            elif event.user_left or event.user_kicked:
+                if settings.get('goodbye'):
+                    user = await event.get_user()
+                    name = user.first_name or "عضو"
+                    text = settings.get('goodbye_text', "وداعاً {name}! 👋").replace("{name}", name)
+                    await client.send_message(chat_id, text)
+        except Exception:
+            pass
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تنظيف_مجموعة\s+(\d+)'))
+    async def clean_group_messages(event):
+        if event.is_private:
+            return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
+        num = int(event.pattern_match.group(1))
+        await event.edit(f"🧹 `جاري مسح {num} رسالة...`")
+        count = 0
+        async for msg in client.iter_messages(event.chat_id):
+            if msg.out:
+                try:
+                    await msg.delete()
+                    count += 1
+                    if count >= num:
+                        break
+                except Exception:
+                    continue
+        confirm = await client.send_message(event.chat_id, f"✅ تم مسح {count} رسالة.")
+        await asyncio.sleep(2)
+        await confirm.delete()
+
+    # =========================================================
+    # م5 - أوامر الخاص والردود
+    # =========================================================
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.حالة\s+(.+)'))
+    async def set_bio(event):
+        bio = event.pattern_match.group(1).strip()
+        try:
+            await client(UpdateProfileRequest(about=bio))
+            await event.edit(f"✅ **تم تغيير البايو إلى:**\n{bio}")
+        except Exception as e:
+            await event.edit(f"❌ فشل تغيير البايو: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.حالة_مسح'))
+    async def clear_bio(event):
+        try:
+            await client(UpdateProfileRequest(about=""))
+            await event.edit("✅ **تم مسح البايو بنجاح.**")
+        except Exception as e:
+            await event.edit(f"❌ فشل: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.قائمة_المكتومين'))
+    async def list_muted(event):
+        with get_db() as conn:
+            rows = conn.execute('SELECT user_id FROM muted_users').fetchall()
+        if not rows:
+            return await event.edit("📋 لا يوجد أشخاص مكتومون حالياً.")
+        text = "🔇 **قائمة المكتومين:**\n\n"
+        for i, row in enumerate(rows, 1):
+            try:
+                user = await client.get_entity(row['user_id'])
+                name = f"{user.first_name} (@{user.username})" if user.username else user.first_name
+            except Exception:
+                name = str(row['user_id'])
+            text += f"{i}. {name}\n"
+        await event.edit(text)
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.رسالة_مجدولة\s+(\d+)\s+(.+)'))
+    async def scheduled_message(event):
+        minutes = int(event.pattern_match.group(1))
+        text = event.pattern_match.group(2).strip()
+        chat_id = event.chat_id
+        await event.edit(f"⏳ **سيتم إرسال الرسالة بعد {minutes} دقيقة.**")
+        await asyncio.sleep(minutes * 60)
+        try:
+            await client.send_message(chat_id, text)
+        except Exception as e:
+            await client.send_message('me', f"❌ فشل إرسال الرسالة المجدولة: {e}")
+
+    # =========================================================
+    # م8 - أوامر الانتحال والإرسال
+    # =========================================================
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.حفظ_بروفايل'))
+    async def save_profile(event):
+        await event.edit("💾 `جاري حفظ بروفايلك...`")
+        try:
+            me = await get_me_cached(client)
+            full_me = await client(GetFullUserRequest('me'))
+
+            # حذف باك أب قديم
+            for f in glob.glob(f'{BACKUP_FOLDER}/*'):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+            # حفظ الصور
+            my_photos = await client.get_profile_photos('me')
+            for i, photo in enumerate(my_photos):
+                await client.download_media(photo, f'{BACKUP_FOLDER}/orig_{i}.jpg')
+
+            # حفظ البيانات بقاعدة البيانات
+            with get_db() as conn:
+                conn.execute(
+                    'INSERT OR REPLACE INTO profile_backup (id, first_name, last_name, bio) VALUES (?, ?, ?, ?)',
+                    (1, me.first_name, me.last_name or "", full_me.full_user.about or "")
+                )
+                # حفظ تاريخ الحفظ
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('profile_saved_at', ?)",
+                    (datetime.now().strftime('%Y-%m-%d %H:%M'),))
+                conn.commit()
+
+            await event.edit(
+                f"✅ **تم حفظ بروفايلك بنجاح!**\n\n"
+                f"👤 **الاسم:** {me.first_name} {me.last_name or ''}\n"
+                f"📝 **البايو:** {full_me.full_user.about or 'فارغ'}\n"
+                f"🖼 **الصور المحفوظة:** {len(my_photos)}\n\n"
+                f"استخدم `.رجوع` للرجوع لهذا البروفايل بأي وقت."
+            )
+        except Exception as e:
+            await event.edit(f"❌ فشل الحفظ: {e}")
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.تاريخ_الانتحال'))
+    async def clone_history(event):
+        with get_db() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = 'last_cloned'").fetchone()
+            row_time = conn.execute("SELECT value FROM settings WHERE key = 'last_cloned_at'").fetchone()
+            saved_at = conn.execute("SELECT value FROM settings WHERE key = 'profile_saved_at'").fetchone()
+            backup = conn.execute('SELECT first_name, last_name FROM profile_backup WHERE id = 1').fetchone()
+
+        text = "🎭 **تاريخ الانتحال:**\n\n"
+
+        if row and row['value']:
+            text += f"👤 **آخر انتحال:** {row['value']}\n"
+            text += f"🕐 **وقت الانتحال:** {row_time['value'] if row_time else 'غير معروف'}\n\n"
+        else:
+            text += "❌ لم تنتحل أي شخص بعد.\n\n"
+
+        if backup:
+            text += f"💾 **البروفايل المحفوظ:** {backup['first_name']} {backup['last_name'] or ''}\n"
+            text += f"📅 **وقت الحفظ:** {saved_at['value'] if saved_at else 'غير معروف'}"
+        else:
+            text += "⚠️ لم تحفظ بروفايلك بعد. استخدم `.حفظ_بروفايل`"
+
+        await event.edit(text)
 
 
 # =====================================================================
