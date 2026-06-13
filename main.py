@@ -1356,18 +1356,31 @@ async def register_features(client):
         except Exception as e:
             await event.edit(f"❌ خطأ: {e}")
 
-    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.دوري\s+(\d+)\s+(.+)'))
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.دوري\s+(\d+)(ث|ثانية|د|دقيقة)?\s+(.+)'))
     async def start_periodic(event):
         if event.is_private:
             return await event.edit("⚠️ هذا الأمر للمجموعات فقط.")
-        minutes = int(event.pattern_match.group(1))
-        text = event.pattern_match.group(2).strip()
+        amount = int(event.pattern_match.group(1))
+        unit = event.pattern_match.group(2) or 'د'
+        text = event.pattern_match.group(3).strip()
         chat_id = event.chat_id
+
+        # تحويل للثواني
+        if unit in ['ث', 'ثانية']:
+            seconds = amount
+            unit_text = f"{amount} ثانية"
+        else:
+            seconds = amount * 60
+            unit_text = f"{amount} دقيقة"
+
+        # الحد الأدنى 1 ثانية
+        if seconds < 1:
+            return await event.edit("⚠️ الحد الأدنى ثانية وحدة.")
 
         if chat_id in periodic_tasks and not periodic_tasks[chat_id].done():
             periodic_tasks[chat_id].cancel()
 
-        await event.edit(f"✅ **تم تفعيل الدوري كل {minutes} دقيقة.**")
+        await event.edit(f"✅ **تم تفعيل الدوري كل {unit_text}.**")
 
         async def periodic_loop():
             members = await get_group_members(client, chat_id)
@@ -1383,7 +1396,7 @@ async def register_features(client):
                     index += 1
                 except Exception:
                     pass
-                await asyncio.sleep(minutes * 60)
+                await asyncio.sleep(seconds)
 
         periodic_tasks[chat_id] = asyncio.create_task(periodic_loop())
 
@@ -1395,6 +1408,57 @@ async def register_features(client):
             await event.edit("⛔ **تم إيقاف الدوري.**")
         else:
             await event.edit("⚠️ لا يوجد دوري نشط.")
+
+    # تخزين مهام الملصق الدوري
+    sticker_tasks = {}
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ملصق_دوري\s+(\d+)(ث|ثانية|د|دقيقة)?'))
+    async def start_sticker_periodic(event):
+        if not event.is_reply:
+            return await event.edit("⚠️ يرجى الرد على الملصق.")
+        reply = await event.get_reply_message()
+        if not reply.sticker:
+            return await event.edit("⚠️ الرسالة لا تحتوي على ملصق.")
+
+        amount = int(event.pattern_match.group(1))
+        unit = event.pattern_match.group(2) or 'ث'
+        chat_id = event.chat_id
+
+        if unit in ['ث', 'ثانية']:
+            seconds = amount
+            unit_text = f"{amount} ثانية"
+        else:
+            seconds = amount * 60
+            unit_text = f"{amount} دقيقة"
+
+        if seconds < 1:
+            return await event.edit("⚠️ الحد الأدنى ثانية وحدة.")
+
+        # إيقاف المهمة القديمة لو موجودة
+        if chat_id in sticker_tasks and not sticker_tasks[chat_id].done():
+            sticker_tasks[chat_id].cancel()
+
+        sticker = reply.sticker
+        await event.edit(f"✅ **تم تفعيل الملصق الدوري كل {unit_text}.**")
+
+        async def sticker_loop():
+            while True:
+                try:
+                    await client.send_file(chat_id, sticker)
+                except Exception:
+                    pass
+                await asyncio.sleep(seconds)
+
+        sticker_tasks[chat_id] = asyncio.create_task(sticker_loop())
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.وقف_ملصق'))
+    async def stop_sticker_periodic(event):
+        chat_id = event.chat_id
+        if chat_id in sticker_tasks and not sticker_tasks[chat_id].done():
+            sticker_tasks[chat_id].cancel()
+            await event.edit("⛔ **تم إيقاف الملصق الدوري.**")
+        else:
+            await event.edit("⚠️ لا يوجد ملصق دوري نشط.")
 
     @client.on(events.NewMessage(outgoing=True, pattern=r'(?i)^\.ترحيب\s+(تفعيل|تعطيل)'))
     async def toggle_welcome(event):
