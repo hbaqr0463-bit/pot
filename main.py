@@ -1010,30 +1010,49 @@ async def register_features(client):
         item = results[num]
         await event.edit(f"⏳ `جاري تحميل الصوت...`\n🎵 {item['title']}")
         try:
-            import yt_dlp as ytdlp
             me = await get_me_cached(client)
-            ydl_opts = {
-                'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',
-                'outtmpl': f"audio_{me.id}.%(ext)s",
-                'quiet': True,
-                'no_warnings': True,
-            }
-            loop = asyncio.get_event_loop()
-            def do_download():
-                with ytdlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(item['url'], download=True)
-                    return ydl.prepare_filename(info)
-            downloaded_file = await loop.run_in_executor(None, do_download)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.cobalt.tools/",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "url": item['url'],
+                        "downloadMode": "audio",
+                        "audioFormat": "mp3",
+                        "audioBitrate": "128"
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    data = await resp.json()
 
-            if os.path.exists(downloaded_file):
+            if data.get('status') not in ['tunnel', 'redirect', 'stream']:
+                return await event.edit(f"❌ فشل التحميل: {data.get('error', {}).get('code', 'خطأ غير معروف')}")
+
+            download_url = data.get('url')
+            if not download_url:
+                return await event.edit("❌ ما قدر يجيب رابط التحميل.")
+
+            # تحميل الملف
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    audio_data = await resp.read()
+
+            audio_file = f"audio_{me.id}.mp3"
+            with open(audio_file, 'wb') as f:
+                f.write(audio_data)
+
+            if os.path.exists(audio_file):
                 from telethon.tl.types import DocumentAttributeAudio
                 await client.send_file(
                     event.chat_id,
-                    downloaded_file,
+                    audio_file,
                     caption=f"🎵 {item['title']}",
                     attributes=[DocumentAttributeAudio(duration=0, title=item['title'], performer="YouTube")]
                 )
-                os.remove(downloaded_file)
+                os.remove(audio_file)
                 await event.delete()
             else:
                 await event.edit("❌ فشل تحميل الصوت.")
